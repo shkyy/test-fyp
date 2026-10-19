@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Weekly log content</title>
+<style>
+  body { font-family: Arial, sans-serif; font-size: 11pt; max-width: 1000px; margin: 24px auto; padding: 0 16px; color: #111; background: #fff; }
+  h1 { font-size: 18pt; margin-top: 40px; border-top: 3px solid #2a78d6; padding-top: 12px; }
+  h2 { font-size: 13pt; margin-top: 24px; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0 16px; }
+  th, td { border: 1px solid #999; padding: 5px 7px; vertical-align: top; text-align: left; }
+  th { background: #e8eef7; }
+  .note { background: #fff7e0; border-left: 4px solid #e0a800; padding: 8px 12px; }
+  .howto { background: #eef6ee; border-left: 4px solid #1baf7a; padding: 8px 12px; }
+</style>
+</head>
+<body>
+
+<div class="howto">
+<b>How to use this file (delete this box, don't paste it):</b> open this file in Chrome or Edge, select everything from one big heading down to the line just above the next big heading, copy it (Ctrl+C) and paste it (Ctrl+V) into the matching tab of your "Weekly log" Google Doc. The tables keep their formatting when you paste.
+</div>
+
+<!-- ===================================================== -->
+<h1>Experiment log</h1>
+
+<p><b>Project aim:</b> predict how a piano performance's <b>dynamics</b> (loudness) and <b>tempo</b> (speed) change over time, using only the audio. The MIDI file recorded with each performance is used only to create the "correct answers" for training. The model never sees the MIDI when it makes a prediction.</p>
+<p><b>Data:</b> 10 performances from the MAESTRO v3.0.0 dataset (audio WAV + matching MIDI), kept in <code>test_data/</code>. This is a small test subset for checking the pipeline, not the full dataset.</p>
+
+<h2>EXP-01: Data check: are the audio and MIDI usable? (notebook 03_test_exp, 8–9 Oct 2026)</h2>
+<table>
+<tr><th style="width:22%">Item</th><th>Details</th></tr>
+<tr><td>Question</td><td>Do the WAV and MIDI files line up, and which MIDI information can be used as training targets?</td></tr>
+<tr><td>What I did</td><td>Paired each WAV with its MIDI file (10 pairs found). Loaded the first pair, plotted the mel-spectrogram and the MIDI note velocities, and read the MIDI tempo markers. Then compared audio loudness (RMS in dB, one value per second) with the mean MIDI velocity in the same second.</td></tr>
+<tr><td>Results</td><td>
+• Audio: 44,100 Hz, 2 channels (stereo), 434.9 s long.<br>
+• MIDI: 5,126 notes. Velocity min / mean / max = 3 / 68.7 / 123 (scale 0–127).<br>
+• Tempo markers: only one value, 120 BPM, for the whole piece.<br>
+• Loudness vs velocity correlation: <b>r = 0.73</b>.</td></tr>
+<tr><td>What it means</td><td>
+• r = 0.73 is a strong positive correlation: when the MIDI says notes are played harder, the audio really is louder. So the files are aligned in time, and <b>MIDI velocity is a good target for dynamics</b>.<br>
+• 120 BPM is the default value MIDI software writes when it doesn't know the tempo, so it is a <b>placeholder, not the performer's real tempo</b>. The tempo target has to be calculated from the note timings instead.</td></tr>
+<tr><td>Limitations</td><td>The alignment check used only one file. The audio is stereo at 44.1 kHz, which led to the preprocessing tests in EXP-02.</td></tr>
+<tr><td>Outputs</td><td>results/plots/01_mel_spectrogram.png, results/plots/01_audio_vs_velocity.png</td></tr>
+</table>
+
+<h2>EXP-02: Preprocessing comparison (notebook 04_preprocessing, 12 Oct 2026)</h2>
+<table>
+<tr><th style="width:22%">Item</th><th>Details</th></tr>
+<tr><td>Question</td><td>Which audio preprocessing settings keep the information needed to predict dynamics and tempo, while keeping training cheap?</td></tr>
+<tr><td>What I did</td><td>Tested 7 settings (sample rate, mono/stereo, loudness normalisation, segment length, number of mel bands, hop length, dB reference) on the 10 pairs, using the first 2 minutes of each file. Details and numbers are in the <b>Preprocessing comparison</b> tab.</td></tr>
+<tr><td>Main result</td><td>The most important finding: any normalisation <b>per segment</b> (per clip) destroys the loudness information. The correlation with velocity drops from 0.72 to 0.06 or 0.00. In the same way, a dB scale referenced to each clip's own maximum lowers the correlation (0.60 vs 0.77 with a fixed reference).</td></tr>
+<tr><td>Outcome</td><td>Final pipeline: 22,050 Hz, mono, no amplitude normalisation, 5 s segments, 128 mel bands, hop 512, dB with fixed ref = 1.0, then standardise using training-set statistics only. See the <b>Decision log</b> tab.</td></tr>
+<tr><td>Outputs</td><td>results/preprocessing_results.csv, results/plots/02_n_mels.png</td></tr>
+</table>
+
+<h2>EXP-03: First model comparison: CNN vs CRNN vs CNN + Transformer (notebook 05_models, 12 Oct 2026)</h2>
+<table>
+<tr><th style="width:22%">Item</th><th>Details</th></tr>
+<tr><td>Question</td><td>Which model type predicts dynamics and tempo best from mel-spectrograms? Do any of them do better than just guessing the average?</td></tr>
+<tr><td>Data</td><td>10 pieces, first 180 s of each, cut into 5 s segments, giving 325 segments. Each segment is a mel-spectrogram of 128 mel bands × 215 time frames.<br>
+Split <b>by piece</b> (a piece is only ever in one set): 6 pieces for training (197 segments), 2 for validation (56 segments), 2 for testing (72 segments).</td></tr>
+<tr><td>Targets (what the model predicts, for every frame)</td><td>
+• <b>Dynamics</b>: average velocity of the notes sounding at that moment, divided by 127 (so 0–1).<br>
+• <b>Tempo</b>: how many notes start in a 3 s window around that moment, compared with the piece's usual rate, on a log2 scale. 0 = normal speed, +1 = twice as busy, −1 = half as busy (clipped to ±1). Chords count as one onset.</td></tr>
+<tr><td>Models</td><td>All three share the same CNN front end (3 convolution blocks), which turns each spectrogram frame into a feature vector.<br>
+• <b>CNN only</b>: predicts each frame on its own (188k parameters).<br>
+• <b>CRNN</b>: adds a bidirectional GRU, so each frame can use context from before and after it (262k parameters).<br>
+• <b>CNN + Transformer</b>: adds 2 self-attention layers instead of the GRU (480k parameters).<br>
+• <b>Baseline</b>: always predicts the training-set average. Any useful model must beat this.</td></tr>
+<tr><td>Training setup</td><td>8 epochs, Adam optimiser (learning rate 0.001), batch size 16, mean squared error loss, seed 42, CPU. After each epoch the model was checked on the validation set, and the epoch with the lowest validation loss was kept for testing.</td></tr>
+</table>
+
+<p><b>Test results</b> (lower is better for every error column, best value in each column in bold):</p>
+<table>
+<tr><th>Model</th><th>Parameters</th><th>Training time (s)</th><th>Dynamics MAE (velocity)</th><th>Dynamics RMSE (velocity)</th><th>Tempo MAE</th><th>Tempo RMSE</th></tr>
+<tr><td>Baseline (mean)</td><td>0</td><td>0</td><td>27.25</td><td>34.47</td><td>0.542</td><td>0.615</td></tr>
+<tr><td>CNN only</td><td>187,522</td><td>96.4</td><td><b>22.44</b></td><td>29.45</td><td>0.382</td><td>0.481</td></tr>
+<tr><td>CRNN</td><td>262,018</td><td>127.4</td><td>23.90</td><td>31.46</td><td><b>0.348</b></td><td><b>0.444</b></td></tr>
+<tr><td>CNN + Transformer</td><td>480,002</td><td>141.3</td><td>22.85</td><td><b>28.95</b></td><td>0.406</td><td>0.545</td></tr>
+</table>
+
+<p><b>Best validation loss (MSE) during training:</b> CNN only 0.1525 (epoch 7), CRNN 0.1317 (epoch 6), CNN + Transformer 0.1586 (epoch 8).</p>
+
+<table>
+<tr><th style="width:22%">Item</th><th>Details</th></tr>
+<tr><td>How to read the metrics</td><td>
+• <b>MAE</b> (mean absolute error) = the average size of the error. <b>RMSE</b> is similar but punishes big mistakes more.<br>
+• Dynamics errors are in MIDI velocity units (0–127). A dynamics MAE of 22.4 means the predicted loudness is off by about 22 velocity steps on average.<br>
+• Tempo errors are in log2 units. A tempo MAE of 0.35 means the predicted speed is off by a factor of about 2<sup>0.35</sup> ≈ 1.27, i.e. roughly 27% too fast or too slow on average.</td></tr>
+<tr><td>What it means</td><td>
+1. <b>All three models learn something real.</b> They all beat the baseline on both targets. Dynamics error fell from 27.2 to 22.4 (about 18% better), and tempo error fell from 0.54 to 0.35 (about 36% better, CRNN).<br>
+2. <b>Tempo: CRNN is best.</b> This makes sense, because tempo depends on how notes are spaced over time, and the GRU can look at neighbouring frames.<br>
+3. <b>Dynamics: no clear winner.</b> The three models are within 1.5 velocity steps of each other. With only 2 test pieces and one training run (one seed), a difference this small could just be chance.<br>
+4. <b>The bigger model is not better yet.</b> The Transformer has nearly 2.5× the parameters of the CNN but is not better overall, and its validation loss jumped around (0.17 → 0.24 → 0.17 between epochs 5 and 7). That is typical of a large model trained on very little data.<br>
+5. <b>Signs of overfitting:</b> training loss kept falling (CRNN: 0.196 → 0.069) while validation loss stopped improving at about 0.13–0.16, so the models start memorising the 6 training pieces.</td></tr>
+<tr><td>Limitations</td><td>
+• Very small dataset: 10 pieces, only 2 in the test set.<br>
+• One run per model (seed 42). The results need repeating with several seeds to know whether the differences are real.<br>
+• Only 8 epochs. The training may not have finished.<br>
+• The tempo target is note-onset density (how busy the music is), not true beats per minute.<br>
+• Frames where no note is sounding get a dynamics target of 0 (silence), which may inflate the dynamics error.<br>
+• Only the first 180 s of each piece was used.</td></tr>
+<tr><td>Next steps</td><td>Train on more of MAESTRO; repeat with 3–5 seeds and report mean ± spread; train longer with early stopping; look at how silent frames are handled in the dynamics target; plot predicted vs true curves for a test piece.</td></tr>
+<tr><td>Outputs</td><td>results/model_comparison.csv, results/plots/03_loss_curves.png, saved models in results/models/</td></tr>
+</table>
+
+<!-- ===================================================== -->
+<h1>Preprocessing comparison</h1>
+
+<p>All tests use the 10 WAV + MIDI pairs, first 2 minutes of each file (notebook 04_preprocessing, 12 Oct 2026). Where a test uses a correlation (r), it measures how closely audio loudness follows the MIDI velocity: 1 = perfectly, 0 = not at all. <b>Higher is better</b>, because the model has to read loudness from the audio to predict dynamics.</p>
+
+<table>
+<tr><th>#</th><th>Setting tested</th><th>Options compared</th><th>Result</th><th>What the result means</th><th>Chosen</th></tr>
+<tr><td>P1</td><td>Sample rate</td><td>44,100 Hz (original) vs 22,050 Hz</td><td>Energy above 11 kHz: 0.000%. Size for 2 min of audio: 21.2 MB → 10.6 MB.</td><td>22,050 Hz can only represent sounds up to 11 kHz. Practically none of the piano's energy is above that, so nothing useful is lost and the data is half the size.</td><td><b>22,050 Hz</b></td></tr>
+<tr><td>P2</td><td>Channels</td><td>Stereo vs mono</td><td>Left vs right loudness: r = 0.981</td><td>The left and right channels rise and fall in loudness almost identically, so keeping both adds no dynamics information. Mono halves the data again.</td><td><b>Mono</b></td></tr>
+<tr><td>P3</td><td>Amplitude normalisation</td><td>None / peak per file / peak per 5 s segment / RMS per 5 s segment</td><td>Loudness vs velocity: None r = 0.72, Peak per file r = 0.75, Peak per segment r = 0.06, RMS per segment r = 0.00</td><td>Normalising each segment makes every segment equally loud, which <b>wipes out the very thing we are trying to predict</b> (r drops to about 0). Per-file normalisation is about the same as none (0.75 vs 0.72).</td><td><b>None</b></td></tr>
+<tr><td>P4</td><td>Segment length</td><td>5 s vs 10 s</td><td>5 s: 231 training examples, 216 frames each. 10 s: 115 examples, 431 frames each.</td><td>5 s segments give twice as many examples from the same audio, which matters with a small dataset. 5 s is still long enough to contain a crescendo or a tempo change.</td><td><b>5 s</b></td></tr>
+<tr><td>P5</td><td>Number of mel bands (n_mels)</td><td>64 vs 128</td><td>Visual comparison of the two spectrograms (plot 02_n_mels.png)</td><td>With 128 bands, individual notes and harmonics are easier to see. This was judged by eye, not tested with a model.</td><td><b>128</b></td></tr>
+<tr><td>P6</td><td>Hop length (time step between frames)</td><td>256 vs 512 samples</td><td>256: 86.1 frames/s (one every 11.6 ms). 512: 43.1 frames/s (one every 23.2 ms).</td><td>Changes in dynamics and tempo happen over hundreds of milliseconds, so one frame every 23 ms is fine-grained enough, and it halves the number of frames. This was a reasoned choice, not tested with a model.</td><td><b>512</b></td></tr>
+<tr><td>P7</td><td>dB reference for the mel-spectrogram</td><td>ref = np.max (each clip's loudest point = 0 dB) vs ref = 1.0 (fixed)</td><td>Loudness vs velocity: np.max r = 0.60, fixed 1.0 r = 0.77</td><td>Using each clip's own maximum as the reference hides how loud the clip is overall. A fixed reference keeps absolute loudness. The values are then standardised using statistics from the training pieces only, so no test information leaks into training.</td><td><b>ref = 1.0 + standardise on training data</b></td></tr>
+</table>
+
+<p class="note"><b>Notes for discussion:</b> (1) In P3, per-file peak normalisation scored slightly higher than none (0.75 vs 0.72). The difference is small, and "none" was kept because it is simpler and the training-set standardisation in P7 already handles the overall scale. It would be fair to test per-file normalisation in a model later. (2) P5 and P6 were decided by inspection and reasoning, not by training models with each option.</p>
+
+<!-- ===================================================== -->
+<h1>Decision log</h1>
+
+<table>
+<tr><th>ID</th><th>Date</th><th>Decision</th><th>Alternatives considered</th><th>Evidence</th><th>Reason</th><th>Status</th></tr>
+<tr><td>D1</td><td>9 Oct 2026</td><td>Use MIDI note velocity as the dynamics target</td><td>Audio loudness (RMS) as the target</td><td>EXP-01: loudness vs velocity r = 0.73</td><td>Velocity follows the real loudness of the audio and is an exact record of how hard each key was played.</td><td>Final</td></tr>
+<tr><td>D2</td><td>9 Oct 2026</td><td>Do not use MIDI tempo markers. Calculate tempo from how often notes start (onset rate)</td><td>MIDI tempo markers</td><td>EXP-01: the only tempo marker is 120 BPM for the whole piece</td><td>120 BPM is a default placeholder, not the performer's tempo.</td><td>Final (the onset-rate target is a simplification; see limitations in EXP-03)</td></tr>
+<tr><td>D3</td><td>12 Oct 2026</td><td>Resample audio to 22,050 Hz</td><td>Keep 44,100 Hz</td><td>P1: 0.000% energy above 11 kHz</td><td>No useful information lost; half the data size.</td><td>Final</td></tr>
+<tr><td>D4</td><td>12 Oct 2026</td><td>Convert to mono</td><td>Keep stereo</td><td>P2: left/right loudness r = 0.981</td><td>Both channels carry the same dynamics.</td><td>Final</td></tr>
+<tr><td>D5</td><td>12 Oct 2026</td><td>No amplitude normalisation</td><td>Peak per file, peak per segment, RMS per segment</td><td>P3: r = 0.72 / 0.75 / 0.06 / 0.00</td><td>Per-segment normalisation removes the loudness the model has to predict.</td><td>Final (per-file option could be tested later)</td></tr>
+<tr><td>D6</td><td>12 Oct 2026</td><td>5 s segments</td><td>10 s segments</td><td>P4: 231 vs 115 examples</td><td>Twice the training examples; still long enough for musical changes.</td><td>Final</td></tr>
+<tr><td>D7</td><td>12 Oct 2026</td><td>128 mel bands</td><td>64 mel bands</td><td>P5: visual comparison</td><td>Finer pitch detail; common choice in music deep learning.</td><td>Final (not tested with a model)</td></tr>
+<tr><td>D8</td><td>12 Oct 2026</td><td>Hop length 512 (23 ms per frame)</td><td>Hop length 256 (12 ms)</td><td>P6: frame rates</td><td>Dynamics and tempo change slowly; fewer frames means faster training.</td><td>Final (not tested with a model)</td></tr>
+<tr><td>D9</td><td>12 Oct 2026</td><td>dB with fixed reference 1.0, then standardise with training-set statistics only</td><td>dB relative to each clip's maximum</td><td>P7: r = 0.77 vs 0.60</td><td>Keeps absolute loudness; using training statistics only avoids data leakage.</td><td>Final</td></tr>
+<tr><td>D10</td><td>12 Oct 2026</td><td>Split train / validation / test by piece (6 / 2 / 2 pieces)</td><td>Random split of segments</td><td>-</td><td>If segments of the same piece were in both training and test sets, the test score would be too optimistic (data leakage).</td><td>Final</td></tr>
+<tr><td>D11</td><td>12 Oct 2026</td><td>Always compare models against a "predict the average" baseline</td><td>Compare models only with each other</td><td>EXP-03: baseline dynamics MAE 27.2, tempo MAE 0.54</td><td>Shows whether a model has actually learned anything.</td><td>Final</td></tr>
+<tr><td>D12</td><td>12 Oct 2026</td><td>No final model choice yet. CRNN is the current lead for tempo; dynamics is a tie between CNN only and CNN + Transformer</td><td>Pick the model with the best single number now</td><td>EXP-03: CRNN tempo MAE 0.348 (best). Dynamics MAE 22.4 / 23.9 / 22.8</td><td>Only 2 test pieces and one run per model, so small differences may be chance. Need more data and repeated runs first.</td><td>Open (to discuss with supervisor)</td></tr>
+<tr><td>D13</td><td>12 Oct 2026</td><td>Save computed features and trained models to disk and reuse them</td><td>Recompute every time</td><td>Training takes about 1.5–2.5 min per model on CPU</td><td>Restarting the notebook no longer means re-running everything. Set RETRAIN = True after changing data, models or settings.</td><td>Final (engineering)</td></tr>
+</table>
+
+</body>
+</html>

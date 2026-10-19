@@ -1,0 +1,8 @@
+Experiment,Options,What I saw,Choice,Why
+Experiment,44100 vs 22050 Hz,Half the size; 0.000% of energy lost,22050 Hz,Piano energy is well below 11 kHz; cheaper to train
+Mono,stereo vs mono,L/R loudness r = 0.981,mono,Both channels carry the same dynamics
+Amplitude normalisation,none / per file / per segment,"None: 0.72, Peak, per file: 0.75, Peak, per segment: 0.06, RMS, per segment: 0.00",none,Per-segment normalisation removes the loudness we must predict
+Segment length,5 vs 10 s,"5 s = 231 examples, 10 s = 115",5 s,Twice the examples; still long enough for a crescendo
+n_mels,64 vs 128,128 shows notes more clearly,128,Finer pitch detail; common in music deep learning
+hop_length,256 vs 512,512 = 23 ms per frame,512,Dynamics/tempo change over 100s of ms; 23 ms is enough
+dB reference,np.max vs 1.0,0.60 vs 0.77,ref=1.0 + standardise on train only,Per-clip ref hides loudness; avoids leakage

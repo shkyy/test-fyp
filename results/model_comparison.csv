@@ -1,0 +1,5 @@
+Model,Params,Time (s),Dyn MAE (vel),Dyn RMSE (vel),Tempo MAE,Tempo RMSE
+Baseline (mean),0,0,27.249,34.469,0.542,0.615
+CNN only,187522,96.4,22.442,29.451,0.382,0.481
+CRNN,262018,127.4,23.903,31.463,0.348,0.444
+CNN + Transformer,480002,141.3,22.847,28.952,0.406,0.545
